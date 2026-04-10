@@ -1,58 +1,125 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, FlatList } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  FlatList,
+  Image,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import Toast from "react-native-toast-message";
-import { db } from "../firebase"; // <-- 引入 Firestore
+import { db, auth } from "../firebase";
 import { collection, getDocs, deleteDoc, doc } from "firebase/firestore";
 
 export default function ItemManagement() {
   const router = useRouter();
-  const [items, setItems] = useState([]);
+  const [item, setItem] = useState([]);
 
-  // 获取 Firestore 数据
-  const fetchItems = async () => {
+  // 获取数据
+  const fetchItem = async () => {
     try {
-      const querySnapshot = await getDocs(collection(db, "items"));
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const itemRef = collection(db, "user", user.uid, "item");
+      const querySnapshot = await getDocs(itemRef);
+
       const data = querySnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       }));
-      setItems(data);
+
+      setItem(data);
     } catch (error) {
-      console.error("Error fetching items: ", error);
+      console.error("Error fetching item: ", error);
     }
   };
 
   useEffect(() => {
-    fetchItems();
+    fetchItem();
   }, []);
 
-  // 删除 item
-  const handleDelete = async (id: string) => {
+  // 删除
+  const handleDelete = async (id) => {
     try {
-      await deleteDoc(doc(db, "items", id));
+      const user = auth.currentUser;
+      if (!user) return;
+
+      await deleteDoc(doc(db, "user", user.uid, "item", id));
+
       Toast.show({ type: "success", text1: "Item deleted", visibilityTime: 1500 });
-      fetchItems(); // 重新刷新列表
+
+      fetchItem();
     } catch (error) {
       console.error("Error deleting item: ", error);
       Toast.show({ type: "error", text1: "Failed to delete", visibilityTime: 1500 });
     }
   };
 
+  // 时间格式化
+  const formatTime = (timestamp) => {
+    if (!timestamp) return "";
+    const date = timestamp.toDate();
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  };
+
   const renderItem = ({ item }) => (
     <View style={styles.itemCard}>
-      <Text style={styles.itemText}>{item.name}</Text>
+
+      {/* 左边：图片 */}
+      {item.image ? (
+        <Image source={{ uri: item.image }} style={styles.image} />
+      ) : (
+        <View style={styles.noImage}>
+          <Ionicons name="image-outline" size={30} color="#aaa" />
+        </View>
+      )}
+
+      {/* 中间：内容 */}
+      <View style={styles.itemInfo}>
+        <Text style={styles.itemName}>{item.name}</Text>
+
+        {/* device */}
+        <Text style={styles.itemSub}>
+          Device: {item.device || "No Device"}
+        </Text>
+
+        {/* notification */}
+        {item.notification === "Yes" && (
+          <>
+            <Text style={styles.itemSub}>
+              Days: {item.days?.join(", ")}
+            </Text>
+
+            <Text style={styles.itemSub}>
+              Time: {formatTime(item.startTime)} - {formatTime(item.endTime)}
+            </Text>
+          </>
+        )}
+      </View>
+
+      {/* 右边按钮 */}
       <View style={styles.itemButtons}>
         <TouchableOpacity
           style={styles.iconButton}
-          onPress={() => router.push({pathname: "/edit-item", params:{id:item.id}})}
+          onPress={() =>
+            router.push({ pathname: "/edit-item", params: { id: item.id } })
+          }
         >
-          <Ionicons name="create-outline" size={22} color="#000000" />
+          <Ionicons name="create-outline" size={22} color="#000" />
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.iconButton} onPress={() => handleDelete(item.id)}>
-          <Ionicons name="trash-outline" size={22} color="#000000" />
+        <TouchableOpacity
+          style={styles.iconButton}
+          onPress={() => handleDelete(item.id)}
+        >
+          <Ionicons name="trash-outline" size={22} color="#000" />
         </TouchableOpacity>
       </View>
     </View>
@@ -60,6 +127,7 @@ export default function ItemManagement() {
 
   return (
     <View style={styles.container}>
+      {/* HEADER */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={28} color="#333" />
@@ -67,6 +135,7 @@ export default function ItemManagement() {
         <Text style={styles.headerTitle}>Item Management</Text>
       </View>
 
+      {/* ADD BUTTON */}
       <TouchableOpacity
         style={styles.addButton}
         onPress={() => router.push("/add-item")}
@@ -75,8 +144,9 @@ export default function ItemManagement() {
         <Text style={styles.addText}>Add Item</Text>
       </TouchableOpacity>
 
+      {/* LIST */}
       <FlatList
-        data={items}
+        data={item}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         contentContainerStyle={{ paddingBottom: 30 }}
@@ -88,6 +158,7 @@ export default function ItemManagement() {
   );
 }
 
+// ---------------- STYLE ----------------
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -108,7 +179,7 @@ const styles = StyleSheet.create({
   addButton: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#000000",
+    backgroundColor: "#000",
     paddingVertical: 12,
     paddingHorizontal: 15,
     borderRadius: 15,
@@ -120,24 +191,56 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginLeft: 8,
   },
+
+  // 卡片
   itemCard: {
     backgroundColor: "#fff",
-    padding: 15,
+    padding: 12,
     borderRadius: 12,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 12,
     elevation: 2,
   },
-  itemText: {
-    fontSize: 16,
+
+  image: {
+    width: 60,
+    height: 60,
+    borderRadius: 10,
+    marginRight: 10,
   },
+
+  noImage: {
+    width: 60,
+    height: 60,
+    borderRadius: 10,
+    backgroundColor: "#eee",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+  },
+
+  itemInfo: {
+    flex: 1,
+  },
+
+  itemName: {
+    fontSize: 16,
+    fontWeight: "bold",
+    marginBottom: 4,
+  },
+
+  itemSub: {
+    fontSize: 12,
+    color: "#666",
+  },
+
   itemButtons: {
     flexDirection: "row",
   },
+
   iconButton: {
-    marginLeft: 12,
+    marginLeft: 10,
     padding: 6,
   },
 });

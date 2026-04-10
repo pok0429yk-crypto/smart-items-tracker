@@ -1,94 +1,132 @@
-import React, { useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Image, Alert } from "react-native";
+import React, { useState, useEffect } from "react";
+import {
+  View, Text, StyleSheet, TouchableOpacity,
+  TextInput, ScrollView, Image, Alert
+} from "react-native";
 import { Picker } from "@react-native-picker/picker";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { collection, addDoc, Timestamp } from "firebase/firestore";
+
+import {
+  collection, addDoc, getDocs,
+  Timestamp, updateDoc, DocumentData
+} from "firebase/firestore";
+
+import {
+  ref, uploadBytes, getDownloadURL
+} from "firebase/storage";
+
 import { db, storage, auth } from "../firebase";
 
-
-
-const uploadImageAsync = async (uri) => {
-  if (!uri) return null;
-
-  const response = await fetch(uri);
-  const blob = await response.blob();
-
-  const filename = uri.substring(uri.lastIndexOf("/") + 1);
-  const storageRef = ref(storage, `images/${filename}`);
-
-  await uploadBytes(storageRef, blob);
-  const downloadURL = await getDownloadURL(storageRef);
-  return downloadURL;
+/* ================= TYPES ================= */
+type Device = {
+  id: string;
+  name?: string;
 };
 
 export default function AddItem() {
   const router = useRouter();
 
-  const [itemName, setItemName] = useState("");
-  const [selectedDevice, setSelectedDevice] = useState("No Device");
-  const [notificationEnabled, setNotificationEnabled] = useState("No");
-  const [selectedDays, setSelectedDays] = useState(["Everyday"]);
+  const [itemName, setItemName] = useState<string>("");
+  const [selectedDevice, setSelectedDevice] = useState<string>("No Device");
+  const [devices, setDevices] = useState<Device[]>([]);
 
-  const [startTime, setStartTime] = useState(new Date());
-  const [endTime, setEndTime] = useState(new Date());
+  const [notificationEnabled, setNotificationEnabled] = useState<string>("No");
+  const [selectedDays, setSelectedDays] = useState<string[]>(["Everyday"]);
 
-  const [showStartPicker, setShowStartPicker] = useState(false);
-  const [showEndPicker, setShowEndPicker] = useState(false);
+  const [startTime, setStartTime] = useState<Date>(new Date());
+  const [endTime, setEndTime] = useState<Date>(new Date());
 
-  const [image, setImage] = useState(null);
+  const [showStartPicker, setShowStartPicker] = useState<boolean>(false);
+  const [showEndPicker, setShowEndPicker] = useState<boolean>(false);
 
-  const days = [
-    "Everyday",
-    "Mon",
-    "Tue",
-    "Wed",
-    "Thu",
-    "Fri",
-    "Sat",
-    "Sun",
+  const [image, setImage] = useState<string | null>(null);
+
+  const days: string[] = [
+    "Everyday", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
   ];
 
-  const formatTime = (date) => {
-    return date.toLocaleTimeString([], {
+  /* ================= IMAGE UPLOAD ================= */
+  const uploadImageAsync = async (uri: string, itemId?: string): Promise<string | null> => {
+    if (!uri) return null;
+
+    const user = auth.currentUser;
+    if (!user) return null;
+
+    const response = await fetch(uri);
+    const blob = await response.blob();
+
+    const filename = uri.substring(uri.lastIndexOf("/") + 1);
+
+    const storageRef = ref(
+      storage,
+      `users/${user.uid}/item/${itemId ?? filename}.jpg`
+    );
+
+    await uploadBytes(storageRef, blob);
+
+    return await getDownloadURL(storageRef);
+  };
+
+  /* ================= FETCH DEVICES ================= */
+  const fetchDevices = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    try {
+      const snapshot = await getDocs(
+        collection(db, "user", user.uid, "device")
+      );
+
+      const list: Device[] = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...(doc.data() as DocumentData),
+      }));
+
+      setDevices(list);
+    } catch (err) {
+      console.log("Device fetch error:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchDevices();
+  }, []);
+
+  /* ================= HELPERS ================= */
+  const formatTime = (date: Date) =>
+    date.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
     });
-  };
 
-  // Day 多选逻辑
-  const toggleDay = (day) => {
+  const toggleDay = (day: string) => {
     if (day === "Everyday") {
       setSelectedDays(["Everyday"]);
       return;
     }
 
-    let updatedDays = selectedDays.includes(day)
-      ? selectedDays.filter((d) => d !== day)
-      : [...selectedDays.filter((d) => d !== "Everyday"), day];
+    let updated = selectedDays.includes(day)
+      ? selectedDays.filter(d => d !== day)
+      : [...selectedDays.filter(d => d !== "Everyday"), day];
 
-    if (updatedDays.length === 0) {
-      updatedDays = ["Everyday"];
-    }
-
-    setSelectedDays(updatedDays);
+    if (updated.length === 0) updated = ["Everyday"];
+    setSelectedDays(updated);
   };
 
-  // 选择照片
+  /* ================= IMAGE PICK ================= */
   const pickImage = async () => {
-    const permissionResult =
-      await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permissionResult.granted) {
-      Alert.alert("Permission denied", "Cannot access gallery");
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (!permission.granted) {
+      Alert.alert("Permission denied");
       return;
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.7,
     });
 
@@ -97,75 +135,84 @@ export default function AddItem() {
     }
   };
 
+  /* ================= SAVE ================= */
+  const handleSave = async () => {
+    if (!itemName) {
+      Alert.alert("Error", "Enter item name");
+      return;
+    }
 
-const handleSave = async () => {
-  if (!itemName) {
-    Alert.alert("Error", "Please enter item name");
-    return;
-  }
+    const user = auth.currentUser;
+    if (!user) {
+      Alert.alert("Error", "Not logged in");
+      return;
+    }
 
-  if (notificationEnabled === "Yes" && endTime <= startTime) {
-    Alert.alert("Error", "End time must be later than start time");
-    return;
-  }
+    try {
+      // 1️⃣ create item first
+      const docRef = await addDoc(
+        collection(db, "user", user.uid, "item"),
+        {
+          name: itemName,
+          device: selectedDevice,
+          notification: notificationEnabled,
+          days: selectedDays,
+          startTime: Timestamp.fromDate(startTime),
+          endTime: Timestamp.fromDate(endTime),
+          image: null,
+          createdAt: Timestamp.now(),
+        }
+      );
 
-  if (!auth.currentUser) {
-    Alert.alert("Error", "You must be logged in to save item");
-    return;
-  }
+      // 2️⃣ upload image
+      if (image) {
+        const imageUrl = await uploadImageAsync(image, docRef.id);
 
-  try {
-    // 上传图片
-    const imageUrl = await uploadImageAsync(image);
+        await updateDoc(docRef, {
+          image: imageUrl,
+        });
+      }
 
-    // 保存到 Firestore
-    await addDoc(collection(db, "items"), {
-      ownerId: auth.currentUser.uid,
-      name: itemName,
-      device: selectedDevice,
-      notification: notificationEnabled,
-      days: selectedDays,
-      startTime: Timestamp.fromDate(startTime),
-      endTime: Timestamp.fromDate(endTime),
-      image: imageUrl || null,
-      createdAt: Timestamp.now(),
-    });
+      Alert.alert("Success", "Item saved!");
+      router.back();
 
-    Alert.alert("Success", "Item saved successfully!");
-    router.back();
-  } catch (error) {
-    console.log("Error saving item:", error);
-    Alert.alert("Error", "Failed to save item");
-  }
-};
+    } catch (err) {
+      console.log(err);
+      Alert.alert("Error", "Save failed");
+    }
+  };
 
-  return (
+  /* ================= UI ================= */
+return (
     <ScrollView style={styles.container}>
       {/* HEADER */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color="#333" />
+          <Ionicons name="chevron-back" size={28} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Add Item</Text>
       </View>
 
-      {/* ITEM NAME */}
+      {/* NAME */}
       <Text style={styles.label}>Item Name</Text>
       <TextInput
         style={styles.input}
-        placeholder="Enter item name"
         value={itemName}
         onChangeText={setItemName}
+        placeholder="Enter item name"
       />
 
       {/* DEVICE */}
-      <Text style={styles.label}>Select Device</Text>
+      <Text style={styles.label}>Device</Text>
       <View style={styles.pickerContainer}>
         <Picker
           selectedValue={selectedDevice}
-          onValueChange={(itemValue) => setSelectedDevice(itemValue)}
+          onValueChange={setSelectedDevice}
         >
           <Picker.Item label="No Device" value="No Device" />
+          {devices.map(d => (
+            <Picker.Item key={d.id} label={d.name} value={d.name} />
+          ))}
         </Picker>
       </View>
 
@@ -174,28 +221,27 @@ const handleSave = async () => {
       <View style={styles.pickerContainer}>
         <Picker
           selectedValue={notificationEnabled}
-          onValueChange={(itemValue) => setNotificationEnabled(itemValue)}
+          onValueChange={setNotificationEnabled}
         >
           <Picker.Item label="No" value="No" />
           <Picker.Item label="Yes" value="Yes" />
         </Picker>
       </View>
 
-      {/* DAY & TIME - 仅当 Notification = Yes */}
+      {/* DAY + TIME */}
       {notificationEnabled === "Yes" && (
         <>
-          {/* DAY 多选 */}
-          <Text style={styles.label}>Select Days</Text>
+          <Text style={styles.label}>Days</Text>
           <View style={styles.daysContainer}>
-            {days.map((day) => {
-              const isSelected = selectedDays.includes(day);
+            {days.map(day => {
+              const selected = selectedDays.includes(day);
               return (
                 <TouchableOpacity
                   key={day}
-                  style={[styles.dayButton, isSelected && styles.selectedDay]}
+                  style={[styles.dayButton, selected && styles.selectedDay]}
                   onPress={() => toggleDay(day)}
                 >
-                  <Text style={{ color: isSelected ? "#fff" : "#000" }}>
+                  <Text style={{ color: selected ? "#fff" : "#000" }}>
                     {day}
                   </Text>
                 </TouchableOpacity>
@@ -203,160 +249,78 @@ const handleSave = async () => {
             })}
           </View>
 
-          {/* TIME RANGE */}
-          <Text style={styles.label}>Time Range</Text>
-          <View style={styles.timeRangeContainer}>
-            <TouchableOpacity
-              style={styles.timeBox}
-              onPress={() => setShowStartPicker(true)}
-            >
-              <Text style={styles.timeText}>{formatTime(startTime)}</Text>
+          <Text style={styles.label}>Time</Text>
+          <View style={styles.timeRow}>
+            <TouchableOpacity onPress={() => setShowStartPicker(true)}>
+              <Text>{formatTime(startTime)}</Text>
             </TouchableOpacity>
 
-            <Text style={{ marginHorizontal: 10 }}>-</Text>
+            <Text> - </Text>
 
-            <TouchableOpacity
-              style={styles.timeBox}
-              onPress={() => setShowEndPicker(true)}
-            >
-              <Text style={styles.timeText}>{formatTime(endTime)}</Text>
+            <TouchableOpacity onPress={() => setShowEndPicker(true)}>
+              <Text>{formatTime(endTime)}</Text>
             </TouchableOpacity>
           </View>
-
-          {showStartPicker && (
-            <DateTimePicker
-              value={startTime}
-              mode="time"
-              is24Hour={true}
-              display="spinner"
-              onChange={(event, selectedDate) => {
-                setShowStartPicker(false);
-                if (selectedDate) setStartTime(selectedDate);
-              }}
-            />
-          )}
-
-          {showEndPicker && (
-            <DateTimePicker
-              value={endTime}
-              mode="time"
-              is24Hour={true}
-              display="spinner"
-              onChange={(event, selectedDate) => {
-                setShowEndPicker(false);
-                if (selectedDate) setEndTime(selectedDate);
-              }}
-            />
-          )}
         </>
       )}
 
-      {/* PHOTO */}
+      {/* TIME PICKERS */}
+      {showStartPicker && (
+        <DateTimePicker
+          value={startTime}
+          mode="time"
+          is24Hour
+          display="spinner"
+          onChange={(e, d) => {
+            setShowStartPicker(false);
+            if (d) setStartTime(d);
+          }}
+        />
+      )}
+
+      {showEndPicker && (
+        <DateTimePicker
+          value={endTime}
+          mode="time"
+          is24Hour
+          display="spinner"
+          onChange={(e, d) => {
+            setShowEndPicker(false);
+            if (d) setEndTime(d);
+          }}
+        />
+      )}
+
+      {/* IMAGE */}
       <Text style={styles.label}>Photo</Text>
-      <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
-        <Text style={{ color: "#fff", fontWeight: "bold" }}>
+      <TouchableOpacity style={styles.photoBtn} onPress={pickImage}>
+        <Text style={{ color: "#fff" }}>
           {image ? "Change Photo" : "Add Photo"}
         </Text>
       </TouchableOpacity>
-      {image && (
-        <Image source={{ uri: image }} style={styles.imagePreview} />
-      )}
+
+      {image && <Image source={{ uri: image }} style={styles.image} />}
 
       {/* SAVE */}
-      <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-        <Text style={styles.saveText}>Save Item</Text>
+      <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+        <Text style={{ color: "#fff" }}>Save Item</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f2f4f8",
-    paddingHorizontal: 20,
-    paddingTop: 50,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    marginLeft: 12,
-  },
-  label: {
-    fontWeight: "bold",
-    marginTop: 15,
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: "#fff",
-    padding: 12,
-    borderRadius: 10,
-  },
-  pickerContainer: {
-    backgroundColor: "#fff",
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-  daysContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-  },
-  dayButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    backgroundColor: "#fff",
-    marginRight: 10,
-    marginBottom: 10,
-  },
-  selectedDay: {
-    backgroundColor: "#000",
-  },
-  timeRangeContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginVertical: 10,
-  },
-  timeBox: {
-    backgroundColor: "#fff",
-    padding: 15,
-    borderRadius: 12,
-    minWidth: 100,
-    alignItems: "center",
-  },
-  timeText: {
-    fontSize: 18,
-    fontWeight: "bold",
-  },
-  photoButton: {
-    backgroundColor: "#000",
-    padding: 12,
-    borderRadius: 12,
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  imagePreview: {
-    width: "100%",
-    height: 200,
-    borderRadius: 12,
-    marginBottom: 10,
-  },
-  saveButton: {
-    backgroundColor: "#000",
-    padding: 15,
-    borderRadius: 12,
-    marginTop: 20,
-    alignItems: "center",
-    marginBottom: 40,
-  },
-  saveText: {
-    color: "#fff",
-    fontWeight: "bold",
-  },
+  container: { flex: 1, padding: 20 },
+  header: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
+  headerTitle: { fontSize: 18, marginLeft: 10 },
+  label: { marginTop: 10, fontWeight: "bold" },
+  input: { backgroundColor: "#fff", padding: 10, borderRadius: 8 },
+  pickerContainer: { backgroundColor: "#fff", borderRadius: 8 },
+  daysContainer: { flexDirection: "row", flexWrap: "wrap" },
+  dayButton: { padding: 8, margin: 5, backgroundColor: "#eee", borderRadius: 20 },
+  selectedDay: { backgroundColor: "#000" },
+  timeRow: { flexDirection: "row", marginTop: 10 },
+  photoBtn: { backgroundColor: "#000", padding: 10, marginTop: 10, alignItems: "center" },
+  image: { width: "100%", height: 200, marginTop: 10 },
+  saveBtn: { backgroundColor: "#000", padding: 15, marginTop: 20, alignItems: "center" },
 });

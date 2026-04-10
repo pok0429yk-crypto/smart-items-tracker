@@ -1,41 +1,54 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Image, Alert } from "react-native";
+import {
+  View, Text, StyleSheet, TouchableOpacity, TextInput,
+  ScrollView, Image, Alert
+} from "react-native";
 import { Picker } from "@react-native-picker/picker";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter, useLocalSearchParams } from "expo-router";
+
+import {
+  doc, getDoc, updateDoc,
+  Timestamp, collection, getDocs
+} from "firebase/firestore";
+
+import {
+  ref, uploadBytes, getDownloadURL
+} from "firebase/storage";
+
 import { db, storage, auth } from "../firebase";
-import { doc, getDoc, updateDoc, Timestamp } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 export default function EditItem() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ id: string }>();
-  const itemId = params.id;
+  const params = useLocalSearchParams();
+  const itemId = Array.isArray(params.id) ? params.id[0] : params.id;
 
   const [loading, setLoading] = useState(true);
 
   const [itemName, setItemName] = useState("");
   const [selectedDevice, setSelectedDevice] = useState("No Device");
+  const [devices, setDevices] = useState([]);
   const [notificationEnabled, setNotificationEnabled] = useState("No");
-  const [selectedDays, setSelectedDays] = useState<string[]>(["Everyday"]);
+  const [selectedDays, setSelectedDays] = useState(["Everyday"]);
   const [startTime, setStartTime] = useState(new Date());
   const [endTime, setEndTime] = useState(new Date());
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
-  const [image, setImage] = useState<string | null>(null);
+  const [image, setImage] = useState(null);
 
   const days = ["Everyday", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-  // 从 Firestore 读取数据
+  // 读取数据
   useEffect(() => {
-    const fetchItem = async () => {
-      if (!itemId) return;
+    const fetchData = async () => {
+      const user = auth.currentUser;
+      if (!user || !itemId) return;
 
       try {
-        const docRef = doc(db, "items", itemId);
-        const docSnap = await getDoc(docRef);
+        const itemRef = doc(db, "user", user.uid, "item", itemId);
+        const docSnap = await getDoc(itemRef);
 
         if (docSnap.exists()) {
           const data = docSnap.data();
@@ -47,101 +60,134 @@ export default function EditItem() {
           setStartTime(data.startTime ? data.startTime.toDate() : new Date());
           setEndTime(data.endTime ? data.endTime.toDate() : new Date());
           setImage(data.image || null);
-        } else {
-          Alert.alert("Error", "Item not found");
-          router.back();
         }
+
+        const deviceSnap = await getDocs(
+          collection(db, "user", user.uid, "device")
+        );
+
+        const deviceList = deviceSnap.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        setDevices(deviceList);
+
       } catch (error) {
-        console.error("Error fetching item:", error);
-        Alert.alert("Error", "Failed to load item");
+        console.error(error);
+        Alert.alert("Error", "Load failed");
         router.back();
       } finally {
         setLoading(false);
       }
     };
 
-    fetchItem();
+    fetchData();
   }, [itemId]);
 
-  // 上传图片
-  const uploadImageAsync = async (uri: string) => {
+  // 上传图片（固定路径 = 不会堆垃圾）
+  const uploadImageAsync = async (uri) => {
     if (!uri) return null;
+
+    const user = auth.currentUser;
+    if (!user) return null;
+
     const response = await fetch(uri);
     const blob = await response.blob();
-    const filename = uri.substring(uri.lastIndexOf("/") + 1);
-    const storageRef = ref(storage, `images/${filename}`);
+
+    const storageRef = ref(
+      storage,
+      `users/${user.uid}/items/${itemId}.jpg`
+    );
+
     await uploadBytes(storageRef, blob);
+
     return await getDownloadURL(storageRef);
   };
 
-  // 选择图片
+  // 选图
   const pickImage = async () => {
-    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permissionResult.granted) {
-      Alert.alert("Permission denied", "Cannot access gallery");
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (!permission.granted) {
+      Alert.alert("Permission denied");
       return;
     }
+
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.7,
     });
-    if (!result.canceled && result.assets.length > 0) {
+
+    if (!result.canceled) {
       setImage(result.assets[0].uri);
     }
   };
 
-  const formatTime = (date: Date) =>
+  const formatTime = (date) =>
     date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 
-  const toggleDay = (day: string) => {
-    if (day === "Everyday") {
-      setSelectedDays(["Everyday"]);
-      return;
-    }
-    let updatedDays = selectedDays.includes(day)
+  const toggleDay = (day) => {
+    if (day === "Everyday") return setSelectedDays(["Everyday"]);
+
+    let updated = selectedDays.includes(day)
       ? selectedDays.filter((d) => d !== day)
       : [...selectedDays.filter((d) => d !== "Everyday"), day];
-    if (updatedDays.length === 0) updatedDays = ["Everyday"];
-    setSelectedDays(updatedDays);
+
+    if (updated.length === 0) updated = ["Everyday"];
+    setSelectedDays(updated);
   };
 
-  // 保存更新
+  // 更新
   const handleSave = async () => {
-    if (!itemName) {
-      Alert.alert("Error", "Please enter item name");
+    const user = auth.currentUser;
+
+    if (!user) {
+      Alert.alert("Error", "Not logged in");
       return;
     }
+
+    if (!itemName) {
+      Alert.alert("Error", "Enter item name");
+      return;
+    }
+
     if (notificationEnabled === "Yes" && endTime <= startTime) {
-      Alert.alert("Error", "End time must be later than start time");
+      Alert.alert("Error", "Invalid time");
       return;
     }
 
     try {
-      const imageUrl = image ? await uploadImageAsync(image) : null;
+      let imageUrl = image;
 
-      const itemRef = doc(db, "items", itemId!);
+      //如果是新选的图片（本地 uri 才上传）
+      if (image && !image.startsWith("https")) {
+        imageUrl = await uploadImageAsync(image);
+      }
+
+      const itemRef = doc(db, "user", user.uid, "item", itemId);
+
       await updateDoc(itemRef, {
-        ownerId: auth.currentUser.uid,
         name: itemName,
         device: selectedDevice,
         notification: notificationEnabled,
         days: selectedDays,
         startTime: Timestamp.fromDate(startTime),
         endTime: Timestamp.fromDate(endTime),
-        image: imageUrl,
+        image: imageUrl || null,
       });
 
-      Alert.alert("Success", "Item updated successfully!");
+      Alert.alert("Success", "Updated!");
       router.back();
+
     } catch (error) {
-      console.error("Error updating item:", error);
-      Alert.alert("Error", "Failed to update item");
+      console.error(error);
+      Alert.alert("Error", "Update failed");
     }
   };
 
   if (loading) {
     return (
-      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+      <View style={styles.containerCenter}>
         <Text>Loading...</Text>
       </View>
     );
@@ -151,18 +197,21 @@ export default function EditItem() {
     <ScrollView style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color="#333" />
+          <Ionicons name="chevron-back" size={28} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Edit Item</Text>
       </View>
 
       <Text style={styles.label}>Item Name</Text>
-      <TextInput style={styles.input} placeholder="Enter item name" value={itemName} onChangeText={setItemName} />
+      <TextInput style={styles.input} value={itemName} onChangeText={setItemName} />
 
-      <Text style={styles.label}>Select Device</Text>
+      <Text style={styles.label}>Device</Text>
       <View style={styles.pickerContainer}>
         <Picker selectedValue={selectedDevice} onValueChange={setSelectedDevice}>
           <Picker.Item label="No Device" value="No Device" />
+          {devices.map((d) => (
+            <Picker.Item key={d.id} label={d.name} value={d.name} />
+          ))}
         </Picker>
       </View>
 
@@ -176,85 +225,59 @@ export default function EditItem() {
 
       {notificationEnabled === "Yes" && (
         <>
-          <Text style={styles.label}>Select Days</Text>
+          <Text style={styles.label}>Days</Text>
           <View style={styles.daysContainer}>
             {days.map((day) => {
-              const isSelected = selectedDays.includes(day);
+              const selected = selectedDays.includes(day);
               return (
-                <TouchableOpacity key={day} style={[styles.dayButton, isSelected && styles.selectedDay]} onPress={() => toggleDay(day)}>
-                  <Text style={{ color: isSelected ? "#fff" : "#000" }}>{day}</Text>
+                <TouchableOpacity
+                  key={day}
+                  style={[styles.dayButton, selected && styles.selectedDay]}
+                  onPress={() => toggleDay(day)}
+                >
+                  <Text style={{ color: selected ? "#fff" : "#000" }}>{day}</Text>
                 </TouchableOpacity>
               );
             })}
           </View>
 
-          <Text style={styles.label}>Time Range</Text>
-          <View style={styles.timeRangeContainer}>
-            <TouchableOpacity style={styles.timeBox} onPress={() => setShowStartPicker(true)}>
-              <Text style={styles.timeText}>{formatTime(startTime)}</Text>
-            </TouchableOpacity>
-            <Text style={{ marginHorizontal: 10 }}>-</Text>
-            <TouchableOpacity style={styles.timeBox} onPress={() => setShowEndPicker(true)}>
-              <Text style={styles.timeText}>{formatTime(endTime)}</Text>
-            </TouchableOpacity>
+          <Text style={styles.label}>Time</Text>
+          <View style={styles.timeRow}>
+            <Text>{formatTime(startTime)}</Text>
+            <Text> - </Text>
+            <Text>{formatTime(endTime)}</Text>
           </View>
-
-          {showStartPicker && (
-            <DateTimePicker
-              value={startTime}
-              mode="time"
-              is24Hour
-              display="spinner"
-              onChange={(event, selectedDate) => {
-                setShowStartPicker(false);
-                if (selectedDate) setStartTime(selectedDate);
-              }}
-            />
-          )}
-
-          {showEndPicker && (
-            <DateTimePicker
-              value={endTime}
-              mode="time"
-              is24Hour
-              display="spinner"
-              onChange={(event, selectedDate) => {
-                setShowEndPicker(false);
-                if (selectedDate) setEndTime(selectedDate);
-              }}
-            />
-          )}
         </>
       )}
 
       <Text style={styles.label}>Photo</Text>
-      <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
-        <Text style={{ color: "#fff", fontWeight: "bold" }}>{image ? "Change Photo" : "Add Photo"}</Text>
+      <TouchableOpacity style={styles.photoBtn} onPress={pickImage}>
+        <Text style={{ color: "#fff" }}>Select Photo</Text>
       </TouchableOpacity>
-      {image && <Image source={{ uri: image }} style={styles.imagePreview} />}
 
-      <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-        <Text style={styles.saveText}>Update Item</Text>
+      {image && <Image source={{ uri: image }} style={styles.image} />}
+
+      <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+        <Text style={{ color: "#fff" }}>Update</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 }
 
+// styles
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f2f4f8", paddingHorizontal: 20, paddingTop: 50 },
+  container: { flex: 1, padding: 20 },
+  containerCenter: { flex: 1, justifyContent: "center", alignItems: "center" },
   header: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
-  headerTitle: { fontSize: 20, fontWeight: "bold", marginLeft: 12 },
-  label: { fontWeight: "bold", marginTop: 15, marginBottom: 8 },
-  input: { backgroundColor: "#fff", padding: 12, borderRadius: 10 },
-  pickerContainer: { backgroundColor: "#fff", borderRadius: 10, marginBottom: 10 },
+  headerTitle: { fontSize: 18, marginLeft: 10 },
+  label: { marginTop: 10, fontWeight: "bold" },
+  input: { backgroundColor: "#fff", padding: 10, borderRadius: 8 },
+  pickerContainer: { backgroundColor: "#fff", borderRadius: 8 },
   daysContainer: { flexDirection: "row", flexWrap: "wrap" },
-  dayButton: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: "#fff", marginRight: 10, marginBottom: 10 },
+  dayButton: { padding: 8, margin: 5, backgroundColor: "#eee", borderRadius: 20 },
   selectedDay: { backgroundColor: "#000" },
-  timeRangeContainer: { flexDirection: "row", alignItems: "center", justifyContent: "center", marginVertical: 10 },
-  timeBox: { backgroundColor: "#fff", padding: 15, borderRadius: 12, minWidth: 100, alignItems: "center" },
-  timeText: { fontSize: 18, fontWeight: "bold" },
-  photoButton: { backgroundColor: "#000", padding: 12, borderRadius: 12, alignItems: "center", marginBottom: 10 },
-  imagePreview: { width: "100%", height: 200, borderRadius: 12, marginBottom: 10 },
-  saveButton: { backgroundColor: "#000", padding: 15, borderRadius: 12, marginTop: 20, alignItems: "center", marginBottom: 40 },
-  saveText: { color: "#fff", fontWeight: "bold" },
+  timeRow: { flexDirection: "row", marginTop: 10 },
+  photoBtn: { backgroundColor: "#000", padding: 10, marginTop: 10 },
+  image: { width: "100%", height: 200, marginTop: 10 },
+  saveBtn: { backgroundColor: "#000", padding: 15, marginTop: 20, alignItems: "center" },
 });
