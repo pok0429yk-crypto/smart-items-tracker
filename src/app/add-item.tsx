@@ -1,24 +1,14 @@
 import React, { useState, useEffect } from "react";
-import {
-  View, Text, StyleSheet, TouchableOpacity,
-  TextInput, ScrollView, Image, Alert
-} from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Image, Alert } from "react-native";
 import { Picker } from "@react-native-picker/picker";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-
-import {
-  collection, addDoc, getDocs,
-  Timestamp, updateDoc, DocumentData
-} from "firebase/firestore";
-
-import {
-  ref, uploadBytes, getDownloadURL
-} from "firebase/storage";
-
+import { collection, addDoc, getDocs, Timestamp, updateDoc, DocumentData } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage, auth } from "../firebase";
+import * as FileSystem from "expo-file-system/legacy";
 
 /* ================= TYPES ================= */
 type Device = {
@@ -26,6 +16,7 @@ type Device = {
   name?: string;
 };
 
+/* ================= COMPONENT ================= */
 export default function AddItem() {
   const router = useRouter();
 
@@ -44,30 +35,45 @@ export default function AddItem() {
 
   const [image, setImage] = useState<string | null>(null);
 
-  const days: string[] = [
-    "Everyday", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
-  ];
+  const days = ["Everyday","Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 
-  /* ================= IMAGE UPLOAD ================= */
-  const uploadImageAsync = async (uri: string, itemId?: string): Promise<string | null> => {
-    if (!uri) return null;
+  /* ================= IMAGE UPLOAD  ================= */
+  const uploadImageAsync = async (uri: string, itemId: string) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) throw new Error("No user logged in");
 
-    const user = auth.currentUser;
-    if (!user) return null;
+      console.log("📸 Uploading:", uri);
 
-    const response = await fetch(uri);
-    const blob = await response.blob();
+      // 1️⃣ read local file as base64
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: "base64",
+      });
 
-    const filename = uri.substring(uri.lastIndexOf("/") + 1);
+      // 2️⃣ convert to blob
+      const blob = await fetch(`data:image/jpeg;base64,${base64}`)
+        .then(res => res.blob());
 
-    const storageRef = ref(
-      storage,
-      `users/${user.uid}/item/${itemId ?? filename}.jpg`
-    );
+      // 3️⃣ storage path
+      const storageRef = ref(
+        storage,
+        `users/${user.uid}/items/${itemId}.jpg`
+      );
 
-    await uploadBytes(storageRef, blob);
+      // 4️⃣ upload
+      await uploadBytes(storageRef, blob);
 
-    return await getDownloadURL(storageRef);
+      // 5️⃣ get url
+      const url = await getDownloadURL(storageRef);
+
+      console.log("✅ Upload success:", url);
+
+      return url;
+
+    } catch (err) {
+      console.log("❌ UPLOAD ERROR:", err);
+      return null;
+    }
   };
 
   /* ================= FETCH DEVICES ================= */
@@ -80,7 +86,7 @@ export default function AddItem() {
         collection(db, "user", user.uid, "device")
       );
 
-      const list: Device[] = snapshot.docs.map((doc) => ({
+      const list: Device[] = snapshot.docs.map(doc => ({
         id: doc.id,
         ...(doc.data() as DocumentData),
       }));
@@ -114,6 +120,7 @@ export default function AddItem() {
       : [...selectedDays.filter(d => d !== "Everyday"), day];
 
     if (updated.length === 0) updated = ["Everyday"];
+
     setSelectedDays(updated);
   };
 
@@ -143,13 +150,10 @@ export default function AddItem() {
     }
 
     const user = auth.currentUser;
-    if (!user) {
-      Alert.alert("Error", "Not logged in");
-      return;
-    }
+    if (!user) return;
 
     try {
-      // 1️⃣ create item first
+      // 1️⃣ create firestore doc
       const docRef = await addDoc(
         collection(db, "user", user.uid, "item"),
         {
@@ -164,10 +168,15 @@ export default function AddItem() {
         }
       );
 
+      let imageUrl = null;
+
       // 2️⃣ upload image
       if (image) {
-        const imageUrl = await uploadImageAsync(image, docRef.id);
+        imageUrl = await uploadImageAsync(image, docRef.id);
+      }
 
+      // 3️⃣ update firestore
+      if (imageUrl) {
         await updateDoc(docRef, {
           image: imageUrl,
         });
@@ -177,13 +186,13 @@ export default function AddItem() {
       router.back();
 
     } catch (err) {
-      console.log(err);
+      console.log("SAVE ERROR:", err);
       Alert.alert("Error", "Save failed");
     }
   };
 
   /* ================= UI ================= */
-return (
+  return (
     <ScrollView style={styles.container}>
       {/* HEADER */}
       <View style={styles.header}>
@@ -209,9 +218,9 @@ return (
           selectedValue={selectedDevice}
           onValueChange={setSelectedDevice}
         >
-          <Picker.Item label="No Device" value="No Device" />
+          <Picker.Item label="No Device" value="No Device" color="#000"/>
           {devices.map(d => (
-            <Picker.Item key={d.id} label={d.name} value={d.name} />
+            <Picker.Item key={d.id} label={d.name} value={d.name} color="#000"/>
           ))}
         </Picker>
       </View>
@@ -223,8 +232,8 @@ return (
           selectedValue={notificationEnabled}
           onValueChange={setNotificationEnabled}
         >
-          <Picker.Item label="No" value="No" />
-          <Picker.Item label="Yes" value="Yes" />
+          <Picker.Item label="No" value="No" color="#000"/>
+          <Picker.Item label="Yes" value="Yes" color="#000"/>
         </Picker>
       </View>
 
@@ -293,34 +302,114 @@ return (
 
       {/* IMAGE */}
       <Text style={styles.label}>Photo</Text>
-      <TouchableOpacity style={styles.photoBtn} onPress={pickImage}>
+      <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
         <Text style={{ color: "#fff" }}>
           {image ? "Change Photo" : "Add Photo"}
         </Text>
       </TouchableOpacity>
 
-      {image && <Image source={{ uri: image }} style={styles.image} />}
+      {image && <Image source={{ uri: image }} style={styles.imagePreview} />}
 
       {/* SAVE */}
-      <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+      <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
         <Text style={{ color: "#fff" }}>Save Item</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 }
 
+/* ================= STYLES ================= */
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20 },
-  header: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
-  headerTitle: { fontSize: 18, marginLeft: 10 },
-  label: { marginTop: 10, fontWeight: "bold" },
-  input: { backgroundColor: "#fff", padding: 10, borderRadius: 8 },
-  pickerContainer: { backgroundColor: "#fff", borderRadius: 8 },
-  daysContainer: { flexDirection: "row", flexWrap: "wrap" },
-  dayButton: { padding: 8, margin: 5, backgroundColor: "#eee", borderRadius: 20 },
-  selectedDay: { backgroundColor: "#000" },
-  timeRow: { flexDirection: "row", marginTop: 10 },
-  photoBtn: { backgroundColor: "#000", padding: 10, marginTop: 10, alignItems: "center" },
-  image: { width: "100%", height: 200, marginTop: 10 },
-  saveBtn: { backgroundColor: "#000", padding: 15, marginTop: 20, alignItems: "center" },
+  container: {
+    flex: 1,
+    backgroundColor: "#f2f4f8",
+    paddingHorizontal: 20,
+    paddingTop: 50,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    marginLeft: 12,
+  },
+  label: {
+    fontWeight: "bold",
+    marginTop: 15,
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: "#fff",
+    padding: 12,
+    borderRadius: 10,
+  },
+  pickerContainer: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  daysContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  dayButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: "#fff",
+    marginRight: 10,
+    marginBottom: 10,
+  },
+  selectedDay: {
+    backgroundColor: "#000",
+  },
+  timeRangeContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginVertical: 10,
+  },
+  timeBox: {
+    backgroundColor: "#fff",
+    padding: 15,
+    borderRadius: 12,
+    minWidth: 100,
+    alignItems: "center",
+  },
+  timeText: {
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  timeRow: { 
+    flexDirection: "row", 
+    marginTop: 10 
+  },
+  photoButton: {
+    backgroundColor: "#000",
+    padding: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  imagePreview: {
+    width: "100%",
+    height: 200,
+    borderRadius: 12,
+    marginBottom: 10,
+  },
+  saveButton: {
+    backgroundColor: "#000",
+    padding: 15,
+    borderRadius: 12,
+    marginTop: 20,
+    alignItems: "center",
+    marginBottom: 40,
+  },
+  saveText: {
+    color: "#fff",
+    fontWeight: "bold",
+  },
 });

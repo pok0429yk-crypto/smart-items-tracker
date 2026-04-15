@@ -1,24 +1,20 @@
 import React, { useState, useEffect } from "react";
-import {
-  View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Image, Alert
-} from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Image, Alert } from "react-native";
 import { Picker } from "@react-native-picker/picker";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter, useLocalSearchParams } from "expo-router";
-
-import {
-  doc, getDoc, updateDoc,
-  Timestamp, collection, getDocs
-} from "firebase/firestore";
-
-import {
-  ref, uploadBytes, getDownloadURL
-} from "firebase/storage";
-
+import { doc, getDoc, updateDoc, Timestamp, collection, getDocs } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage, auth } from "../firebase";
+import * as FileSystem from "expo-file-system/legacy";
+
+/* ================= TYPE ================= */
+type Device = {
+  id: string;
+  name?: string;
+};
 
 export default function EditItem() {
   const router = useRouter();
@@ -29,17 +25,20 @@ export default function EditItem() {
 
   const [itemName, setItemName] = useState("");
   const [selectedDevice, setSelectedDevice] = useState("No Device");
-  const [devices, setDevices] = useState([]);
+  const [devices, setDevices] = useState<Device[]>([]);
+
   const [notificationEnabled, setNotificationEnabled] = useState("No");
-  const [selectedDays, setSelectedDays] = useState(["Everyday"]);
+  const [selectedDays, setSelectedDays] = useState<string[]>(["Everyday"]);
+
   const [startTime, setStartTime] = useState(new Date());
   const [endTime, setEndTime] = useState(new Date());
+
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
-  const [image, setImage] = useState(null);
 
-  const days = ["Everyday", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const [image, setImage] = useState<string | null>(null);
 
+  const days = ["Everyday","Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   // 读取数据
   useEffect(() => {
     const fetchData = async () => {
@@ -85,27 +84,35 @@ export default function EditItem() {
     fetchData();
   }, [itemId]);
 
-  // 上传图片（固定路径 = 不会堆垃圾）
-  const uploadImageAsync = async (uri) => {
-    if (!uri) return null;
+  /* ================= IMAGE UPLOAD ================= */
+  const uploadImageAsync = async (uri: string) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return null;
 
-    const user = auth.currentUser;
-    if (!user) return null;
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+              encoding: "base64",
+            });
 
-    const response = await fetch(uri);
-    const blob = await response.blob();
+      const blob = await fetch(`data:image/jpeg;base64,${base64}`)
+        .then(res => res.blob());
 
-    const storageRef = ref(
-      storage,
-      `users/${user.uid}/items/${itemId}.jpg`
-    );
+      const storageRef = ref(
+        storage,
+        `users/${user.uid}/items/${itemId}.jpg`
+      );
 
-    await uploadBytes(storageRef, blob);
+      await uploadBytes(storageRef, blob);
 
-    return await getDownloadURL(storageRef);
+      return await getDownloadURL(storageRef);
+
+    } catch (err) {
+      console.log("UPLOAD ERROR:", err);
+      return null;
+    }
   };
 
-  // 选图
+  /* ================= IMAGE PICK ================= */
   const pickImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
@@ -123,64 +130,68 @@ export default function EditItem() {
     }
   };
 
-  const formatTime = (date) =>
-    date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  /* ================= HELPERS ================= */
+  const formatTime = (date: Date) =>
+    date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
 
-  const toggleDay = (day) => {
-    if (day === "Everyday") return setSelectedDays(["Everyday"]);
+  const toggleDay = (day: string) => {
+    if (day === "Everyday") {
+      setSelectedDays(["Everyday"]);
+      return;
+    }
 
     let updated = selectedDays.includes(day)
-      ? selectedDays.filter((d) => d !== day)
-      : [...selectedDays.filter((d) => d !== "Everyday"), day];
+      ? selectedDays.filter(d => d !== day)
+      : [...selectedDays.filter(d => d !== "Everyday"), day];
 
     if (updated.length === 0) updated = ["Everyday"];
+
     setSelectedDays(updated);
   };
 
-  // 更新
+  /* ================= SAVE ================= */
   const handleSave = async () => {
     const user = auth.currentUser;
 
-    if (!user) {
-      Alert.alert("Error", "Not logged in");
-      return;
-    }
-
-    if (!itemName) {
-      Alert.alert("Error", "Enter item name");
-      return;
-    }
+    if (!user) return Alert.alert("Error", "Not logged in");
+    if (!itemName) return Alert.alert("Error", "Enter item name");
 
     if (notificationEnabled === "Yes" && endTime <= startTime) {
-      Alert.alert("Error", "Invalid time");
-      return;
+      return Alert.alert("Error", "End time must be after start time");
     }
 
     try {
       let imageUrl = image;
 
-      //如果是新选的图片（本地 uri 才上传）
       if (image && !image.startsWith("https")) {
         imageUrl = await uploadImageAsync(image);
       }
 
-      const itemRef = doc(db, "user", user.uid, "item", itemId);
+      const itemRef = doc(db, "users", user.uid, "item", itemId);
 
       await updateDoc(itemRef, {
         name: itemName,
         device: selectedDevice,
         notification: notificationEnabled,
-        days: selectedDays,
-        startTime: Timestamp.fromDate(startTime),
-        endTime: Timestamp.fromDate(endTime),
+        days: notificationEnabled === "Yes" ? selectedDays : [],
+        startTime: notificationEnabled === "Yes"
+          ? Timestamp.fromDate(startTime)
+          : null,
+        endTime: notificationEnabled === "Yes"
+          ? Timestamp.fromDate(endTime)
+          : null,
         image: imageUrl || null,
       });
 
       Alert.alert("Success", "Updated!");
       router.back();
 
-    } catch (error) {
-      console.error(error);
+    } catch (err) {
+      console.log(err);
       Alert.alert("Error", "Update failed");
     }
   };
@@ -193,6 +204,7 @@ export default function EditItem() {
     );
   }
 
+  /* ================= UI ================= */
   return (
     <ScrollView style={styles.container}>
       <View style={styles.header}>
@@ -203,14 +215,23 @@ export default function EditItem() {
       </View>
 
       <Text style={styles.label}>Item Name</Text>
-      <TextInput style={styles.input} value={itemName} onChangeText={setItemName} />
+      <TextInput
+        style={styles.input}
+        value={itemName}
+        onChangeText={setItemName}
+      />
 
       <Text style={styles.label}>Device</Text>
       <View style={styles.pickerContainer}>
         <Picker selectedValue={selectedDevice} onValueChange={setSelectedDevice}>
-          <Picker.Item label="No Device" value="No Device" />
-          {devices.map((d) => (
-            <Picker.Item key={d.id} label={d.name} value={d.name} />
+          <Picker.Item label="No Device" value="No Device" color="#000"/>
+          {devices.map(d => (
+            <Picker.Item
+              key={d.id}
+              label={d.name || "Unnamed Device"}
+              value={d.name || "Unnamed Device"}
+              color="#000"
+            />
           ))}
         </Picker>
       </View>
@@ -218,8 +239,8 @@ export default function EditItem() {
       <Text style={styles.label}>Notification</Text>
       <View style={styles.pickerContainer}>
         <Picker selectedValue={notificationEnabled} onValueChange={setNotificationEnabled}>
-          <Picker.Item label="No" value="No" />
-          <Picker.Item label="Yes" value="Yes" />
+          <Picker.Item label="No" value="No" color="#000"/>
+          <Picker.Item label="Yes" value="Yes" color="#000"/>
         </Picker>
       </View>
 
@@ -227,7 +248,7 @@ export default function EditItem() {
         <>
           <Text style={styles.label}>Days</Text>
           <View style={styles.daysContainer}>
-            {days.map((day) => {
+            {days.map(day => {
               const selected = selectedDays.includes(day);
               return (
                 <TouchableOpacity
@@ -235,7 +256,9 @@ export default function EditItem() {
                   style={[styles.dayButton, selected && styles.selectedDay]}
                   onPress={() => toggleDay(day)}
                 >
-                  <Text style={{ color: selected ? "#fff" : "#000" }}>{day}</Text>
+                  <Text style={{ color: selected ? "#fff" : "#000" }}>
+                    {day}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -243,41 +266,159 @@ export default function EditItem() {
 
           <Text style={styles.label}>Time</Text>
           <View style={styles.timeRow}>
-            <Text>{formatTime(startTime)}</Text>
+            <TouchableOpacity onPress={() => setShowStartPicker(true)}>
+              <Text>{formatTime(startTime)}</Text>
+            </TouchableOpacity>
+
             <Text> - </Text>
-            <Text>{formatTime(endTime)}</Text>
+
+            <TouchableOpacity onPress={() => setShowEndPicker(true)}>
+              <Text>{formatTime(endTime)}</Text>
+            </TouchableOpacity>
           </View>
         </>
       )}
 
+      {/* TIME PICKER */}
+      {showStartPicker && (
+        <DateTimePicker
+          value={startTime}
+          mode="time"
+          is24Hour
+          display="spinner"
+          onChange={(e, d) => {
+            setShowStartPicker(false);
+            if (d) setStartTime(d);
+          }}
+        />
+      )}
+
+      {showEndPicker && (
+        <DateTimePicker
+          value={endTime}
+          mode="time"
+          is24Hour
+          display="spinner"
+          onChange={(e, d) => {
+            setShowEndPicker(false);
+            if (d) setEndTime(d);
+          }}
+        />
+      )}
+
       <Text style={styles.label}>Photo</Text>
-      <TouchableOpacity style={styles.photoBtn} onPress={pickImage}>
-        <Text style={{ color: "#fff" }}>Select Photo</Text>
+      <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
+        <Text style={{ color: "#fff" }}>
+          {image ? "Change Photo" : "Add Photo"}
+        </Text>
       </TouchableOpacity>
 
-      {image && <Image source={{ uri: image }} style={styles.image} />}
+      {image && <Image source={{ uri: image }} style={styles.imagePreview} />}
 
-      <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+      <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
         <Text style={{ color: "#fff" }}>Update</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 }
 
-// styles
+/* ================= STYLES ================= */
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20 },
-  containerCenter: { flex: 1, justifyContent: "center", alignItems: "center" },
-  header: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
-  headerTitle: { fontSize: 18, marginLeft: 10 },
-  label: { marginTop: 10, fontWeight: "bold" },
-  input: { backgroundColor: "#fff", padding: 10, borderRadius: 8 },
-  pickerContainer: { backgroundColor: "#fff", borderRadius: 8 },
-  daysContainer: { flexDirection: "row", flexWrap: "wrap" },
-  dayButton: { padding: 8, margin: 5, backgroundColor: "#eee", borderRadius: 20 },
-  selectedDay: { backgroundColor: "#000" },
-  timeRow: { flexDirection: "row", marginTop: 10 },
-  photoBtn: { backgroundColor: "#000", padding: 10, marginTop: 10 },
-  image: { width: "100%", height: 200, marginTop: 10 },
-  saveBtn: { backgroundColor: "#000", padding: 15, marginTop: 20, alignItems: "center" },
+  container: {
+    flex: 1,
+    backgroundColor: "#f2f4f8",
+    paddingHorizontal: 20,
+    paddingTop: 50,
+  },
+  containerCenter: { 
+    flex: 1, 
+    justifyContent: "center", 
+    alignItems: "center" 
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    marginLeft: 12,
+  },
+  label: {
+    fontWeight: "bold",
+    marginTop: 15,
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: "#fff",
+    padding: 12,
+    borderRadius: 10,
+  },
+  pickerContainer: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  daysContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+  },
+  dayButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: "#fff",
+    marginRight: 10,
+    marginBottom: 10,
+  },
+  selectedDay: {
+    backgroundColor: "#000",
+  },
+  timeRangeContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginVertical: 10,
+  },
+  timeBox: {
+    backgroundColor: "#fff",
+    padding: 15,
+    borderRadius: 12,
+    minWidth: 100,
+    alignItems: "center",
+  },
+  timeText: {
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  timeRow: { 
+    flexDirection: "row", 
+    marginTop: 10 
+  },
+  photoButton: {
+    backgroundColor: "#000",
+    padding: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  imagePreview: {
+    width: "100%",
+    height: 200,
+    borderRadius: 12,
+    marginBottom: 10,
+  },
+  saveButton: {
+    backgroundColor: "#000",
+    padding: 15,
+    borderRadius: 12,
+    marginTop: 20,
+    alignItems: "center",
+    marginBottom: 40,
+  },
+  saveText: {
+    color: "#fff",
+    fontWeight: "bold",
+  },
 });
